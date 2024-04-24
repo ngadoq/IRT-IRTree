@@ -1,0 +1,215 @@
+This code fits all the CFA baseline and bifactor models and then saves the model fits.
+
+```{r}
+# library(ProjectTemplate); load.project()
+library(lavaan)
+library(parallel)
+
+# set seed (if needed)
+set.seed(1234)
+
+# load data
+ccases <- readRDS("lavaan/lavaan-ccases.rds")
+meta.hexaco <- readRDS("lavaan/meta.hexaco.rds")
+v <- readRDS("lavaan/v.rds")
+
+# source code
+source("lavaan/model-functions.R")
+source("lib/lavaan-convenience-functions.r")
+
+# settings
+if(!exists("analysis_mode")) analysis_mode <- "publication"
+
+settings <- list()
+if (analysis_mode == "check") {
+    settings$sample <-FALSE
+    settings$parallel <- TRUE
+    settings$fit_model <- FALSE
+    settings$cores <- detectCores() - 1
+}
+
+# use this to examine subset of models after running model code below
+# dput(sample(models[ models$test == "hexaco60", "number"], 10))
+
+if (analysis_mode == "sample") {
+    settings$parallel <- TRUE
+    settings$fit_model <-TRUE 
+    settings$sample <-TRUE 
+    # settings$models <- sample(1:256, 10)
+    settings$models <- c(73L, 71L, 21L, 5L, 28L, 196L, 129L, 207L, 219L, 6L)
+    settings$cores <- min(6, detectCores() - 1)
+}
+
+
+if (analysis_mode == "publication") {
+    settings$sample <-FALSE
+    settings$parallel <- TRUE
+    settings$fit_model <- TRUE
+    # experimenting with speed versus memory constraints
+
+    # hexaco200 models appear to use about 10GB of memory
+    settings$cores <- min(14, detectCores() - 1)
+}
+
+if (analysis_mode == "hexaco60") {
+    settings$sample <-FALSE
+    settings$parallel <- TRUE
+    settings$fit_model <- TRUE
+    settings$cores <- min(14, detectCores() - 1)
+}    
+
+```
+
+
+# Run HEXACO60 analysis on just factors
+```{r}
+constraints <- list(configural = "", 
+    weak = "loadings", 
+    strong = c("loadings", "intercepts"),
+    strict = c("loadings", "intercepts", "residuals"),
+    variances = c("loadings", "intercepts", "residuals", "lv.variances"),
+    covariances = c("loadings", "intercepts", "residuals", "lv.variances", "lv.covariances"),
+    strong_variances = c("loadings", "intercepts", "lv.variances"),
+    strong_covariances = c("loadings", "intercepts", "lv.variances", "lv.covariances")
+)
+
+spec <- list()
+spec$test <- c("hexaco60", "hexaco200")
+spec$evaluative_factor <- c(FALSE, TRUE)
+spec$correlated_residuals <- c(FALSE, TRUE)
+spec$item_count <- c(4, 10) # technically 8 with facets
+
+models <- expand.grid(
+    constraints = names(constraints), 
+    evaluative_factor = spec$evaluative_factor, 
+    correlated_residuals = spec$correlated_residuals, 
+    test = spec$test,
+    estimator = c("default", "WLSMV"),
+    item_count = spec$item_count, 
+    stringsAsFactors = FALSE)
+models$constraints_string <- constraints[models$constraints]
+models$number <- seq(nrow(models))    
+models$fullname <- paste0("item_count", models$item_count, "-",
+                    models$estimator, "-",
+                models$test, "-",
+                "residuals", models$correlated_residuals, "-",
+                "evaluative", models$evaluative_factor, "-",
+            models$constraints)
+models$id <- abbreviate(models$fullname)
+save(models, file = "lavaan/models.rdata")
+
+
+# full set seems to be taking too long
+if (analysis_mode == "hexaco60") {
+    models <- models[ models$test == "hexaco60", ]
+    
+} else {
+    models <- models[ models$item_count == 10 &
+            models$estimator == "default" &
+            models$correlated_residuals == TRUE, ]
+}
+
+
+if (settings$sample) {
+    models <- models[ settings$models, ]
+}
+
+
+# clean up output directory
+# this is a bit dangerous; removing files
+outputdir <- "output/lavaan"
+if (file.exists(outputdir)) {
+    try(sapply(dir(outputdir, full.names = TRUE), function(X) file.remove(X)))
+}
+    
+
+
+if (settings$parallel) {
+    cl <- makeCluster(settings$cores, type="FORK", outfile="output/cluster-output.txt")
+    
+    # models vary dramatically in run time; hence parLapplyLB (load bearing)
+    
+    fits <- parLapplyLB(cl, as.list(seq(nrow(models))), function(i) 
+        estimate_model(
+                     hexaco60 = models$test[i] == "hexaco60",
+                     group.equal = unlist(models$constraints_string[i]),
+                     item_count = models$item_count[i], 
+                     estimator = models$estimator[i],
+                     correlated_residuals = models$correlated_residuals[i],
+                 evaluative_factor = models$evaluative_factor[i], 
+         verbose = TRUE, threshold = 4,
+        orthogonal = TRUE, se = "none",
+        fit_model = settings$fit_model,
+        return_fitobject = FALSE,
+        outputdir = outputdir,
+        id = models$id[i])
+    )
+    stopCluster(cl)
+    
+} else {
+    fits <- lapply(seq(nrow(models)), function(i) 
+           estimate_model(
+                     hexaco60 = models$test[i] == "hexaco60",
+                     group.equal = unlist(models$constraints_string[i]),
+                     item_count = models$item_count[i], 
+                     estimator = models$estimator[i],
+                     correlated_residuals = models$correlated_residuals[i],
+                 evaluative_factor = models$evaluative_factor[i], 
+         verbose = TRUE, threshold = 5,
+        orthogonal = TRUE, se = "none",
+        fit_model = settings$fit_model,
+        return_fitobject = FALSE)
+    )
+}
+names(fits) <- models$id
+
+if (analysis_mode == "hexaco60") {
+    hexaco60fits <- fits
+    save(hexaco60fits, models, file="output/hexaco60fits.rdata")
+} else {
+    save(fits, models, file="output/model-fits.rdata")
+}
+
+# round(t(sapply(fits, function(X) X$fs)), 3)
+# round(t(sapply(fits, function(X) X$fs)), 3)
+# sapply(fits, function(X) X$details$converged)
+
+```
+
+```{r}
+load("output/model-fits.rdata")
+
+# fit <- fits$`itm_cnt4-WLSMV-hxc60-rsdlsFALSE-vltvTRUE-cn`
+# 
+# # number that converged
+# sapply(fits, function(X) X$details$converged) == "TRUE"
+# table(sapply(fits, function(X) X$details$converged) == "TRUE")
+# sort(sapply(fits, function(X) X$details$converged) == "TRUE")
+```
+
+# debug
+```{r}
+# 
+# models[models$test == "hexaco60" & models$constraints == "configural" &
+#        models$estimator == "default" &
+#            models$item_count == 4, ]
+# i <- 28
+# fit <- estimate_model(
+#                      hexaco60 = models$test[i] == "hexaco60",
+#                      group.equal = unlist(models$constraints_string[i]),
+#                      item_count = models$item_count[i], 
+#                      estimator = models$estimator[i],
+#                      correlated_residuals = models$correlated_residuals[i],
+#                  evaluative_factor = models$evaluative_factor[i], 
+#          verbose = TRUE, threshold = 5,
+#         orthogonal = TRUE, se = "none",
+#         fit_model = settings$fit_model,
+#         return_fitobject = FALSE)
+# cat(fit$model)
+# fit$details$converged
+# fit$fs
+# 
+# cat(fits$`itm_cnt4-dflt-hxc60-rsdlsTRUE-vltvTRUE-strc`$model)
+
+```
+

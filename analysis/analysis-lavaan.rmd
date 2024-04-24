@@ -1,0 +1,314 @@
+This code processes the summary statistics for the models.
+
+# Initialise Project
+```{r}
+library(ProjectTemplate); load.project()
+
+```
+
+
+# Examination of how fit statistics vary in HEXACO60
+```{r}
+# This analysis examines the fit statistics for the different 
+# model specifications
+
+# Effect of model features on fit
+focalstats <- c("cfi", "rmsea", "srmr")
+fsfits <- sapply(focalstats, function(DV) 
+    regression(DV, c("constraints_factor", "evaluative_factor", "correlated_residuals",
+                     "all_items", "estimator"), cm60),
+    simplify = FALSE, USE.NAMES = TRUE)
+              
+# Statistical signifiance of effects
+lapply(fsfits, summary)
+
+fstab <- sapply(fsfits, coef)
+rfstab <- round(fstab, 4)
+rfstab
+
+# correlation between fit measures across models
+round(cor(cm60[, c("cfi", "rmsea", "srmr", "tli")], method ="pearson"), 3) 
+round(cor(cm60[, c("cfi", "rmsea", "srmr", "tli")], method ="spearman"), 3) 
+
+
+eff <- c("mabsr_research",  "mabsr_applicant", "dglobal",
+                  "mabsd_domains", "meand_hxac")
+efits <- sapply(eff, function(DV) 
+    regression(DV, c("constraints_factor", "evaluative_factor", "correlated_residuals",
+                     "all_items", "estimator"), rmf(cm60[ !cm60$constraints %in% c("configural", "weak"), ])),
+    simplify = FALSE, USE.NAMES = TRUE)
+lapply(efits, summary)
+
+etab <- sapply(efits, coef)
+retab <- round(etab, 4)
+retab
+```
+
+
+# Main table of model fit statistics 
+```{r}
+dput(names(cmodels))
+
+v$tabindices <- c("chisq", "df", "cfi", "rmsea", "srmr", "mabsr_research",  "mabsr_applicant", "dglobal",
+                  "mabsd_domains", "meand_hxac")
+tcomb <-  round_df(cmodels[cmodels$main_models, 
+                           c("test", "constraints", "evaluative_factor", v$tabindices)], 3)
+tcomb$chisq <- round(tcomb$chisq)
+tcomb$mabsr_applicant <- round(tcomb$mabsr_applicant, 2)
+tcomb$mabsr_research <- round(tcomb$mabsr_research, 2)
+tcomb$dglobal <- round(tcomb$dglobal, 2)
+tcomb$mabsd_domains <- round(tcomb$mabsd_domains, 2)
+tcomb$meand_hxac <- round(tcomb$meand_hxac, 2)
+
+write.csv(tcomb, file = "output/tcombfit.csv", na = "")
+
+tcomb[tcomb$constraints == "strong", ]
+tcomb[tcomb$constraints == "strong_variances", ]
+```
+
+
+
+# Mean absolute correlations 
+
+```{r}
+extract_factor_correlations <- function(params, factors = v$hexaco_factors) {
+    params[ params$lhs %in% factors &  
+            params$rhs %in% factors &
+            params$op == "~~" & params$lhs !=params$rhs , ]
+}
+
+
+# Bifactor: Mean absolute domain correlation in 
+mabscor <- function(evaluative_factor = TRUE) {
+    fit <- get_fit(evaluative_factor = evaluative_factor)
+    fcor <- extract_factor_correlations(fit$sp)
+    fabcor <- sapply(split(fcor, fcor$group), function(X) mean(abs(X$est.std)))
+    fabcor
+}
+
+# Mean absolute domain correlation 
+# Baseline
+round(mabscor(evaluative_factor = FALSE), 2)
+
+# Bifactor
+round(mabscor(evaluative_factor = TRUE), 2) 
+
+
+```
+
+
+# Baseline an bifactor latent domain correlation matrices
+```{r}
+ccor <- list()
+fit_bifactor <- get_fit()
+fit_baseline <- get_fit(evaluative_factor = FALSE)
+ccor$bifactor <- extract_factor_correlations(fit_bifactor$sp)
+ccor$baseline <- extract_factor_correlations(fit_baseline$sp)
+
+extract_matrix <- function(object = ccor$fgh, dv = "est.std_research") {
+    x <- reshape(object[,c("lhs", "rhs", dv)],
+      timevar = "lhs",
+      idvar = c("rhs"),
+      direction = "wide")
+    x <- rbind(c("honestyhumility", rep(NA, 6)), x)
+    x$openness <- NA
+    row.names(x) <- x$rhs
+    x$rhs <- NULL
+    names(x) <- gsub(paste0(dv, "."), "", names(x))
+    y <- sapply(x, as.numeric)
+    row.names(y) <- row.names(x) 
+    y
+}
+
+
+combined_matrix <- function(x = ccor$baseline) {    
+    rmat <- list()
+    rmat$rho <- extract_matrix(x[ x$group == 1, ], "est.std")
+    rmat$aho <- t(extract_matrix(x[ x$group == 2, ], "est.std"))
+    rmat$hocomb <- rmat$rho
+    rmat$hocomb[upper.tri(rmat$hocomb)] <- rmat$aho[upper.tri(rmat$aho)]
+    rmat$hocomb <- round(rmat$hocomb, 2)
+    rmat$hocomb
+}
+
+cbaseline <- combined_matrix(ccor$baseline)
+write.csv(cbaseline, file = "output/cbaseline.csv", na = "")
+
+cbifactor <- combined_matrix(ccor$bifactor)
+write.csv(cbifactor, file = "output/cbifactor.csv", na = "")
+```
+
+
+# Compare square root of item error variances across models and 
+```{r}
+fit_bifactor <- get_fit()$up
+fit_baseline <- get_fit(evaluative_factor = FALSE)$up
+
+compare_sds <- function(fit = fit_baseline) {
+    itemvars <- fit[fit$lhs %in% v$hexaco_items & fit$lhs == fit$rhs, ]
+    itemvars$sd <- sqrt(itemvars$est)
+    sds <- sapply(split(itemvars$sd, itemvars$group), mean)
+    names(sds) <- c("research", "applicant")
+    c(sds, ratio = sds["applicant"] / sds["research"])
+}
+
+compare_vars <- function(fit = fit_baseline) {
+    itemvars <- fit[fit$lhs %in% v$hexaco_items & fit$lhs == fit$rhs, ]
+    vars <- sapply(split(itemvars$est, itemvars$group), mean)
+    names(vars) <- c("research", "applicant")
+    c(vars, ratio = vars["applicant"] / vars["research"])
+}
+
+
+# standard deviation of items
+sds <- round(sapply(scases, function(X) mean(sapply(X[,v$hexaco_items], sd))), 3)
+sds["ratio"] <- sds["applicant"] /sds["research"] 
+round(sds, 3)
+
+# standard errors after latent variables
+round(compare_sds(fit_baseline), 3)
+round(compare_sds(fit_bifactor), 3)
+
+#  error variances after latent variables
+round(sapply(scases, function(X) mean(sapply(X[,v$hexaco_items], var))), 3)
+round(compare_vars(fit_baseline), 3)
+round(compare_vars(fit_bifactor), 3)
+```
+
+
+
+```{r}
+cdir <- topbottomr(cor(items[ items$inhexaco100, v$directed_indices]), 
+               cor(items[, v$directed_indices]))
+
+```
+
+# Do loadings index social desirability
+```{r}
+fit_bifactor <- get_fit()$up
+fit_bifactor
+
+```
+
+# Are loadings bigger in non-applicants
+```{r}
+fit_bifactor <- get_fit(constraints = "configural")$up
+up <- fit_bifactor[fit_bifactor$lhs == "global" & fit_bifactor$rhs %in% v$hexaco_items, ]
+
+# in the configural model, the loadings on the evaluative factor
+# are slightly larger
+aggregate(est ~ group, up, function(X) mean(abs(X)))
+```
+
+
+# Is improved fit inevitable with bifactor model
+```{r}
+# fit <- estimate_model(
+#                      hexaco60 = models$test[i] == "hexaco60",
+#                      group.equal = "",
+#                      item_count = 10, 
+#                      estimator = "default",
+#                      correlated_residuals = FALSE,
+#                  evaluative_factor = FALSE, 
+#          verbose = TRUE, threshold = 4,
+#         orthogonal = TRUE, se = "none",
+#         fit_model = TRUE,
+#         return_fitobject = TRUE,
+#         outputdir = NULL,
+#         id = "temp")
+# 
+# fit <- fit$fit
+# pfit <-parTable(fit)
+# pfit1 <- pfit[pfit$group != 2, ]
+# pfit2 <- pfit[pfit$group != 1, ]
+# 
+# dat1 <- simulateData(pfit1, nobs = 1600)
+# dat1 <- simulateData(pfit2, nobs = 1600)
+# 
+# View(pfit2)
+# 
+
+```
+
+# To what extent does factor explain social desirability
+```{r}
+# To what extent is item level social desirability explained by factors or facets
+
+
+bifit <- get_fit(constraints = "strong", 
+                    evaluative_factor = TRUE,
+                    correlated_residuals = TRUE,
+                    test = "hexaco200",
+                    item_count = 10,
+                    estimator =  "default")
+basefit <- get_fit(constraints = "strong", 
+                    evaluative_factor = FALSE,
+                    correlated_residuals = TRUE,
+                    test = "hexaco200",
+                    item_count = 10,
+                    estimator =  "default")
+x <- bifit$sp
+
+getglobal <- function(x, global = "global", itemids = v$hexaco_items, varname = "global", group = 1) {
+    loadings <- x[x$lhs == global & x$rhs %in% itemids & x$group == group, ]
+    loadings[,varname] <- loadings$est.std
+    loadings$id <- loadings$rhs
+    loadings[,c("id", varname)]
+}
+
+getfactor <- function(x, factors = v$hexaco_facets, itemids = v$hexaco_items, varname = "factor", group = 1) {
+    loadings <- x[x$lhs %in% factors & x$rhs %in% itemids & x$group == group, ]
+    loadings[,varname] <- loadings$est.std
+    loadings$id <- loadings$rhs
+    loadings[,c("id", varname)]
+}
+
+
+itemloads <- getglobal(bifit$sp, varname = "bifactor_global")
+itemloads <- merge(itemloads, getfactor(bifit$sp, varname = "bifactor_facet"))
+itemloads <- merge(itemloads, getfactor(basefit$sp, varname = "baseline_facet"))
+
+items <- merge(items, itemloads)
+gloadings <- data.frame(unclass(principal(ccases[,v$hexaco_factors],1)$loadings))
+gloadings$factor <- row.names(gloadings)
+gloadings$gfpfactorloading <- gloadings$PC1
+items <- merge(items, gloadings[,c("factor", "gfpfactorloading")], all.x = TRUE)
+
+items$gfpfacetbaselineloading <- items$gfpfactorloading * items$baseline_facet
+
+
+
+
+dput(names(items))
+cor(items[,c("bifactor_global", "bifactor_facet", "baseline_facet", "gfpfacetbaselineloading")], use = "pair")^2
+items$short_facet <- paste0(substr(items$factor, 1,1), substr(items$facet,1,1))
+items$short_factor <- paste0(substr(items$factor, 1,1))
+p <- ggplot(items, aes(bifactor_global, gfpfacetbaselineloading, label = short_factor)) + geom_text()
+p <- p + geom_vline(xintercept = 0) + geom_hline(yintercept = 0)
+
+
+# percentage of items where social desirability aligns with factor orientation
+mean((items$reversed * items$gfpfactorloading * items$research_loading) > 0, na.rm = TRUE)
+mean((items$reversed * items$gfpfactorloading * items$d_diff) > 0, na.rm = TRUE)
+
+
+
+items$research_directed_loading <- items$research_loading * items$gfp_factorreversal * items$reversed
+psych::describe(items$research_directed_loading)
+mean(items$research_directed_loading > 0)
+
+factorfit <- lm(research_directed_loading ~ factor, items)
+summary(factorfit)
+facetfit <- lm(research_directed_loading ~ facet, items)
+summary(facetfit)
+
+items$factor
+heac_items <- items[items$factor %in% c("honestyhumility", "extraversion", "agreeableness", "conscientiousness"), ]
+factorfit <- lm(I(reversed*research_loading) ~ factor, heac_items)
+summary(factorfit)
+facetfit <- lm(I(reversed*research_loading) ~ facet, heac_items)
+summary(facetfit)
+
+
+```
+

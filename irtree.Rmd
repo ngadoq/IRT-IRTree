@@ -1,0 +1,196 @@
+---
+title: "IRT-IRTree"
+author: "Nga Do"
+date: "2024-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Import data and libraries
+
+```{r}
+library(tidyverse)
+library(irtrees)
+library(mirt)
+```
+
+
+```{r}
+## Import metadata of items 
+meta.hexaco <- readRDS("data/meta.hexaco.rds")
+# select only hexaco60 items 
+hexaco60_meta <- meta.hexaco %>% filter(!is.na(hexaco60)) %>% 
+  rename(item=id) %>% 
+  select(item, reversed, factor)
+
+hexaco60_item <- hexaco60_meta %>% pull(item)
+
+## Import participant data
+ccases <- read_csv("data/ccases.csv")
+head(ccases)
+
+# Subset only hexaco60 items 
+ccases_60 <- ccases %>% select(c(id, sample, all_of((hexaco60_item))))
+ccases_60_w <- ccases_60 %>% pivot_longer(cols=starts_with("hexaco"), names_to="item")
+
+# Join with meta data 
+joint_df <- ccases_60_w %>% left_join(hexaco60_meta, by="item")
+joint_df <- joint_df %>% mutate(value_r=if_else(reversed==-1, 6-value, value),
+                                across(c(sample, factor), as.factor))
+
+joint_df <- joint_df %>% group_by(id, factor) %>% 
+  mutate(order = order(item))
+
+
+# Pivot wider
+final_df <- joint_df %>% 
+  group_by(id) %>% 
+  select(-value, -item, -reversed) %>% 
+  pivot_wider(names_from = c(factor, order),
+              values_from = value_r)
+
+# Names of columns to exclude from sorting
+exclude_columns <- c("id", "sample")
+
+# Get the list of columns to sort (excluding specified ones)
+columns_to_sort <- setdiff(names(final_df), exclude_columns) %>%
+  sort()
+
+# Combine the excluded columns with sorted columns
+final_column_order <- c(exclude_columns, columns_to_sort)
+
+# Sort columns
+final_df <- final_df %>% 
+  select(all_of(final_column_order))
+
+```
+
+Create subset for each facet, separate research and applicant samples 
+
+```{r}
+# Agreeableness
+research_agree_df <- final_df[final_df$sample == "research",  paste0("agreeableness_", 1:10)]
+applicant_agree_df <- final_df[final_df$sample == "applicant", paste0("agreeableness_", 1:10)]
+
+# Conscientiousness
+research_cons_df <- final_df[final_df$sample == "research",  paste0("conscientiousness_", 1:10)]
+applicant_cons_df <- final_df[final_df$sample == "applicant", paste0("conscientiousness_", 1:10)]
+
+# Emotionality
+research_emo_df <- final_df[final_df$sample == "research",  paste0("emotionality_", 1:10)]
+applicant_emo_df <- final_df[final_df$sample == "applicant", paste0("emotionality_", 1:10)]
+
+# Extraversion
+research_ext_df <- final_df[final_df$sample == "research",  paste0("extraversion_", 1:10)]
+applicant_ext_df <- final_df[final_df$sample == "applicant", paste0("extraversion_", 1:10)]
+
+# Honesty
+research_hon_df <- final_df[final_df$sample == "research",  paste0("honestyhumility_", 1:10)]
+applicant_hon_df <- final_df[final_df$sample == "applicant", paste0("honestyhumility_", 1:10)]
+
+# Openness
+research_open_df <- final_df[final_df$sample == "research",  paste0("openness_", 1:10)]
+applicant_open_df <- final_df[final_df$sample == "applicant", paste0("openness_", 1:10)]
+
+```
+
+
+MPP 
+
+```{r}
+irtree_mod = mirt.model('F1 = 1-10
+  F2 = 11-20
+  F3 = 21-30')
+
+mapping_mpp <- matrix(c(0, 0, 1, 0, 0, 
+                    0, 0, NA, 1, 1, 
+                    1, 0, NA, 0, 1), 5, 3)
+mapping_mpp
+```
+
+
+```{r}
+facet_list <- list(research_agree_df, research_cons_df, research_emo_df, research_ext_df, research_hon_df, research_open_df, applicant_agree_df, applicant_cons_df, applicant_emo_df, applicant_ext_df, applicant_hon_df, applicant_open_df)
+
+
+new_df <- list()
+
+facet_df_name <- c("r_agree_mpp", "r_cons_mpp", "r_emo_mpp", "r_ext_mpp", "r_hon_mpp", "r_open_mpp","a_agree_mpp", "a_cons_mpp", "a_emo_mpp", "a_ext_mpp", "a_hon_mpp", "a_open_mpp")
+
+
+# Loop through the facet list and corresponding names
+for (i in seq_along(facet_list)) {
+  # Apply the function and assign to the corresponding name in new_objects
+  new_df[[facet_df_name[i]]] <- WtoW_single.tree(facet_list[[i]], mapping_mpp)
+}
+
+for (i in seq_along(facet_df_name)) {
+  assign(facet_df_name[i], new_df[[facet_df_name[i]]])
+}
+
+
+result_list <- list()
+
+facet_df_name_fit <- paste0(facet_df_name, "_fit")
+
+for (i in seq_along(new_df)){
+  result_list[[facet_df_name_fit[i]]] <- mirt(data = new_df[[i]],
+  model = irtree_mod,
+  itemtype = '2PL',  method = "MHRM")
+}
+
+for (i in seq_along(facet_df_name_fit)) {
+  assign(facet_df_name_fit[i], result_list[[facet_df_name_fit[i]]])
+}
+
+
+```
+APP
+
+
+```{r}
+mapping_app <- matrix(c(0, 0, NA, 1, 1, 
+                    1, 0, NA, 0, 1, 
+                    NA, 0, 1, 0, NA), 5, 3)
+
+
+new_df_app <- list()
+facet_df_name_app <- gsub("_mpp", "_app", facet_df_name)
+
+# Loop through the facet list and corresponding names
+for (i in seq_along(facet_list)) {
+  # Apply the function and assign to the corresponding name in new_objects
+  new_df_app[[facet_df_name_app[i]]] <- WtoW_single.tree(facet_list[[i]], mapping_app)
+}
+
+for (i in seq_along(facet_df_name_app)) {
+  assign(facet_df_name_app[i], new_df_app[[facet_df_name_app[i]]])
+}
+
+
+result_list_app <- list()
+
+facet_df_name_fit_app <- paste0(facet_df_name_app, "_fit")
+
+for (i in seq_along(new_df_app)){
+  result_list_app[[facet_df_name_fit_app[i]]] <- mirt(data = new_df_app[[i]],
+  model = irtree_mod,
+  itemtype = '2PL',  method = "MHRM")
+}
+
+for (i in seq_along(facet_df_name_fit_app)) {
+  assign(facet_df_name_fit_app[i], result_list_app[[facet_df_name_fit_app[i]]])
+}
+
+```
+
+
+
+Multigroup 
+
+
+
+

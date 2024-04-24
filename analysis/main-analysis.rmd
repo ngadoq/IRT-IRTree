@@ -1,0 +1,293 @@
+
+# Initialise Project
+```{r}
+# install.packages("personalityfacets")
+library(ProjectTemplate); load.project()
+
+scases <- rcases[rcases$sample == "research", ]
+appcases <- rcases[rcases$sample == "applicant", ]
+```             
+
+# Method
+# Sample size 
+```{r}
+# sample and demoraphics
+## before matching
+table(rcases$sample)
+
+
+## after matching
+table(ccases$sample)
+
+```
+
+# Means and SDs
+```{r}
+# Differences between applicants and non-applicants
+gdfactors <- groupdiff(ccases[,v$hexaco_factors], ccases$sample)
+gdfacets <- groupdiff(ccases[,v$hexaco_facets], ccases$sample)
+
+gdall <- rbind(gdfactors, gdfacets)
+gdall <- gdall[c("mean.research",  "sd.research", "mean.applicant","sd.applicant", 
+    "cohensd", "stars")]
+gdall <- round_df(gdall, 2)
+gdall
+
+write.csv(gdall, file = "output/gdall.csv")
+
+
+# Cohen's d for GFP
+fit <- regression(v$hexaco_big1, "sample", ccases)
+round(fit$coefficients["sampleapplicant"] / summary(fit)$sigma, 2)
+
+
+# average absolute ds
+round(mean(abs(gdfactors$cohensd)), 2)
+round(mean(abs(gdfacets$cohensd)), 2)
+```
+
+
+# Reliability analysis
+```{r}
+extract_alpha <- function(scored, digits = 2) {
+    unlist(sapply(scored, function(X) round(X$alpha[1,], digits)))
+}
+
+# note that function uses ccases to get alphas
+alphas <- data.frame(sapply(levels(ccases$sample), function(X) 
+    extract_alpha(scorealltests(ccases[ ccases$sample == X, ]))))
+
+facet_alphas <- alphas[ grep("hexacofacets", row.names(alphas)), ]
+factor_alphas <- alphas[ grep("hexacofactors", row.names(alphas)), ]
+factor_alphas <- factor_alphas[row.names(factor_alphas) != "hexacofactors.other", ]
+
+# Summary statistics for alphas
+round(data.frame(psych::describe(facet_alphas)), 3)
+round(data.frame(psych::describe(factor_alphas)), 3)
+table(round(facet_alphas$research - facet_alphas$applicant, 2))
+```
+
+
+# Correlations between factors in applicants and non-applicants
+```{r}
+scases <- split(ccases[,v$hexaco_factors], ccases$sample)
+scor <- lapply(scases, cor)
+scor$combined <-scor$applicant
+scor$combined[lower.tri(scor$combined)] <- scor$research[lower.tri(scor$combined)]
+scc <- round(scor$combined, 2)
+scc
+write.csv(scc, file = "output/scc.csv")
+
+minimum_significant_r(n = table(ccases$sample)[1])
+
+# standard error of r
+ser <- function(r, n = 1600) {
+    sqrt((1-r^2)/(n -2))
+}
+ser(0)
+```
+
+
+# Evidence of global factors
+```{r}
+egf <- lapply(split(ccases, ccases$sample), function(X) global_factor(X))
+egf$combined <- global_factor(ccases)
+
+regf <- round(data.frame(research = egf$research, 
+                 applicant = egf$applicant,
+                 combined = egf$combined), 3)
+regf
+write.csv(regf, file = "output/regf.csv")
+
+
+```
+
+
+# Exploratory factor analysis
+```{r}
+scases <- split(ccases[,v$hexaco_facets], ccases$sample)
+sfac <- lapply(scases, function(X) factanal(X, 6, rotation = "promax"))
+
+factanal.faccor(sfac$research)
+
+
+factor_order <- c(3, 6, 1, 2, 5, 4)
+lfac <- list() 
+# lfac$research <-factanal.loadings(sfac$research, factor_order = c(5,6,1,2,4,3))
+# lfac$applicant <-factanal.loadings(sfac$applicant, factor_order = c(2,6, 1, 5, 4, 3))
+lfac$research <-factanal.loadings(sfac$research, factor_order = c(4,5,1,2,6,3))
+lfac$applicant <-factanal.loadings(sfac$applicant, factor_order = c(2,6, 1, 4, 5, 3))
+
+
+tablfac <- data.frame(research = lfac$research, applicant = lfac$applicant)
+tablfac
+
+write.csv(tablfac, file = "output/tablfac.csv")
+
+# correlation of loadings
+cor(as.numeric(lfac$applicant), as.numeric(lfac$research))
+round(lfac$research - lfac$applicant, 1)
+
+```
+
+# Robustness checks
+Checks that mean differences reflect social desirability 
+and effect of context.
+
+```{r}
+v$sacs_hexaco_factors <- paste0("sacs", v$hexaco_factors)
+followup$sample <- factor(followup$context, c("research", "recruitment"), 
+                          c("research", "applicant"))
+
+fol <- list()
+fol$baseline <- groupdiff(followup[,v$hexaco_factors], followup$sample)
+fol$followup <- groupdiff(followup[,v$sacs_hexaco_factors], followup$sample)
+
+
+# faking on H, X, A, and C
+v$hxac <- c("honestyhumility", "extraversion", "agreeableness", "conscientiousness")
+v$sacshxac <- paste0("sacs", v$hxac)
+round(mean(fol$baseline[v$hxac, "cohensd"]), 2)
+round(mean(fol$followup[v$sacshxac, "cohensd"]), 2)
+
+round(prop.table(table(followup$gender, followup$sample), 2), 2)
+
+
+p <- ggplot(followup, aes(sacsconscientiousness, conscientiousness)) + geom_point()
+p + facet_wrap( ~ sample) + geom_abline(intercept = 0, slope = 1)
+
+faking <- function(baseline, followup, data, threshold = 2) {
+    fit <- regression(baseline, followup, data)
+    sresid <- as.numeric(scale(resid(fit)))
+    sresid > threshold
+}
+
+v$fake_hexaco_factors <- paste0("fake_", v$hexaco_factors)
+
+threshold_analysis <- function(threshold = 1.5) {
+    followup[, v$fake_hexaco_factors] <- 
+        sapply(1:6, function(X) 
+            faking(v$hexaco_factors[X], v$sacs_hexaco_factors[X], data = followup,
+            threshold = threshold))
+        followup$faking <- apply(followup[, v$fake_hexaco_factors[c(1,3,4,5)]], 1, function(X) sum(X) > 1)
+        round(prop.table(table(followup$faking, followup$sample), 2), 3)
+}
+
+threshold_analysis(0.7)
+threshold_analysis(1)
+threshold_analysis(1.3)
+threshold_analysis(1.5)
+threshold_analysis(1.7)
+```
+
+
+# Item-level analysis
+```{r}
+# Correlations for directed measures of social desirability
+cdir <- topbottomr(cor(items[ items$inhexaco100, v$directed_indices]), 
+               cor(items[, v$directed_indices]))
+
+pairs.panels(items[, v$directed_indices])
+cdir <- data.frame(mean = sapply(items[ items$inhexaco100, v$directed_indices], mean),
+                        sd = sapply(items[ items$inhexaco100, v$directed_indices], sd),
+                        cdir)
+cdir <-round(cdir, 2)
+cdir
+
+
+# Correlations for absolute measures of social desirability
+cabs <- topbottomr(cor(items[ items$inhexaco100, v$absolute_indices]), 
+               cor(items[, v$absolute_indices]))
+cabs <- data.frame(mean = sapply(items[ items$inhexaco100, v$absolute_indices], mean),
+                        sd = sapply(items[ items$inhexaco100, v$absolute_indices], sd),
+                        cabs)
+
+cabs <- round(cabs, 2)
+cabs
+
+minimum_significant_r(100)
+minimum_significant_r(200)
+
+write.csv(cdir, file = "output/cdir.csv", na = "")
+write.csv(cabs, file = "output/cabs.csv", na = "")
+
+
+# check robustness of Cohen's d versus unstandardized differnces
+round(cor(items$mean_diff, items$d_diff), 3)
+```
+
+
+
+# Acquisiecence bias
+Check that tendency to agree with items was not causing effects.
+```{r}
+# correlation between global factor and mean agreement
+round(cor(ccases$hexaco_global_ml, ccases$mean_agreement), 2)
+
+# mean agreement across all scales (is it close to 3
+mean(ccases$mean_agreement)
+
+# mean correlation between mean agreement and item means
+round(mean(as.numeric(cor(ccases[,v$hexaco_items], ccases$mean_agreement))), 2)
+```
+
+
+
+
+# Differnces in standard deviations
+```{r}
+gdfactors <- groupdiff(ccases[,v$hexaco_factors], ccases$sample)
+gdfacets <- groupdiff(ccases[,v$hexaco_facets], ccases$sample)
+
+# sd ratios
+gdfacets$absmean3.research <- abs(gdfacets$mean.research - 3)
+gdfacets$absmean3.applicant <- abs(gdfacets$mean.applicant - 3)
+gdfacets$abs.cohensd <- abs(gdfacets$cohensd)
+gdfacets$stars <- NULL
+gdfacets$sd.ratio <- gdfacets$sd.applicant / gdfacets$sd.research
+gdfacets$relativesd.ratio <- gdfacets$relativesd.applicant /
+    gdfacets$relativesd.research
+
+
+# Levene's test of statistical significance
+levtest <- function(dv, iv, data) {
+    regression_formula <- as.formula(paste(dv, iv, sep=" ~ "))
+    car::leveneTest(regression_formula, data)
+}
+levfits <- sapply(c(v$hexaco_facets, v$hexaco_factors), function(DV) 
+    levtest(DV, "sample", ccases),USE.NAMES = TRUE, simplify = FALSE )
+all(sapply(levfits, function(X) X$`Pr(>F)`[1] < .01))
+       
+
+
+
+round(cor(gdfacets[,c("mean.research", "mean.applicant","cohensd", "diff",
+                      "abs.cohensd", "absmean3.research", "absmean3.applicant")], 
+          gdfacets[,c("sd.research", "sd.applicant", 
+                   "relativesd.research", "relativesd.applicant",
+                   "sd.ratio", "relativesd.ratio")]), 2)
+cor(gdfacets$sd.ratio, gdfacets$relativesd.ratio)
+
+psych::describe(gdfacets[,c("sd.research", "sd.applicant", 
+                   "relativesd.research", "relativesd.applicant",
+                   "sd.ratio", "relativesd.ratio")])
+
+minimum_significant_r(n = 25, alpha = .02)
+minimum_significant_r(n = 25, alpha = .01)
+
+
+par(mfrow=c(1,3))
+plot(data.frame(applicant_mean = gdfacets$mean.applicant,
+                sdratio = gdfacets$sd.ratio), 
+     ylim = c(.5, 1), xlim = c(1,5))
+abline(v = 3, lty = 2)
+plot(data.frame(d = gdfacets$cohensd,
+                sdratio = gdfacets$sd.applicant / gdfacets$sd.research))
+
+round(gdfacets[order(gdfacets$relativesd.ratio), "relativesd.ratio", drop = FALSE], 2)
+
+# Compare item-level standard deviations
+mean(sapply(acases[,v$hexaco_items], sd) / sapply(ncases[,v$hexaco_items], sd))
+
+```
+
